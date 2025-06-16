@@ -27,7 +27,7 @@ on:
         type: number
         default: 0
     secrets:
-      GITHUB_TOKEN:
+      PAT_TOKEN:
         required: true
 
 jobs:
@@ -37,7 +37,7 @@ jobs:
       - name: Auto Assign Team from Custom Property
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.PAT_TOKEN }}
           script: |
             async function assignReviewersFromCustomProperty() {
               try {
