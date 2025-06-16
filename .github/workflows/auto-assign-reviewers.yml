@@ -1,10 +1,34 @@
+# File: cybagedevops/.github/.github/workflows/auto-assign-reviewers.yml
+# Central reusable workflow for auto-assigning reviewers based on custom properties
 
-name: Auto Assign PR Reviewers
-
+name: Auto Assign PR Reviewers from Custom Properties
 
 on:
-  pull_request:
-    types: [opened, ready_for_review]
+  workflow_call:
+    inputs:
+      add_comment:
+        description: 'Whether to add a comment when reviewers are assigned'
+        required: false
+        type: boolean
+        default: true
+      comment_on_error:
+        description: 'Whether to add a comment when assignment fails'
+        required: false
+        type: boolean
+        default: true
+      team_property_names:
+        description: 'Comma-separated list of custom property names to search for teams (e.g., "team,reviewer_team,code_owners")'
+        required: false
+        type: string
+        default: 'team,reviewer'
+      max_teams:
+        description: 'Maximum number of teams to assign (0 = no limit)'
+        required: false
+        type: number
+        default: 0
+    secrets:
+      GITHUB_TOKEN:
+        required: true
 
 jobs:
   assign-reviewers:
@@ -19,6 +43,19 @@ jobs:
               try {
                 console.log(`Processing PR #${context.issue.number} in ${context.repo.owner}/${context.repo.repo}`);
                 
+                // Configuration from inputs
+                const addComment = ${{ inputs.add_comment }};
+                const commentOnError = ${{ inputs.comment_on_error }};
+                const teamPropertyNames = '${{ inputs.team_property_names }}'.split(',').map(name => name.trim().toLowerCase());
+                const maxTeams = ${{ inputs.max_teams }};
+                
+                console.log('Configuration:', {
+                  addComment,
+                  commentOnError,
+                  teamPropertyNames,
+                  maxTeams
+                });
+                
                 // Step 1: Get repository custom properties
                 const repoProperties = await github.request('GET /repos/{owner}/{repo}/properties/values', {
                   owner: context.repo.owner,
@@ -30,16 +67,20 @@ jobs:
                 
                 console.log('Repository custom properties:', JSON.stringify(repoProperties.data, null, 2));
                 
-                // Step 2: Find team properties (supports multiple team properties)
-                const teamProperties = repoProperties.data.filter(property => 
-                  property.property_name.toLowerCase().includes('team') ||
-                  property.property_name.toLowerCase().includes('reviewer')
-                );
+                // Step 2: Find team properties based on configured names
+                const teamProperties = repoProperties.data.filter(property => {
+                  const propName = property.property_name.toLowerCase();
+                  return teamPropertyNames.some(searchName => 
+                    propName.includes(searchName)
+                  );
+                });
                 
                 if (teamProperties.length === 0) {
-                  console.log('No team properties found in custom properties');
+                  console.log(`No team properties found matching: ${teamPropertyNames.join(', ')}`);
                   return;
                 }
+                
+                console.log(`Found ${teamProperties.length} matching team properties`);
                 
                 // Step 3: Get organization teams
                 const teams = await github.rest.teams.list({
@@ -75,6 +116,12 @@ jobs:
                   const teamNames = teamName.split(',').map(name => name.trim());
                   
                   for (const singleTeamName of teamNames) {
+                    // Check max teams limit
+                    if (maxTeams > 0 && teamsToAssign.length >= maxTeams) {
+                      console.log(`Reached maximum team limit of ${maxTeams}`);
+                      break;
+                    }
+                    
                     // Find the team by name (case-insensitive)
                     const team = teams.data.find(t => 
                       t.name.toLowerCase() === singleTeamName.toLowerCase() ||
@@ -102,6 +149,11 @@ jobs:
                     assignedProperties.push(`${teamProperty.property_name} = ${singleTeamName}`);
                     console.log(`Queued team "${team.name}" for assignment`);
                   }
+                  
+                  // Break if we've reached the max teams limit
+                  if (maxTeams > 0 && teamsToAssign.length >= maxTeams) {
+                    break;
+                  }
                 }
                 
                 if (teamsToAssign.length === 0) {
@@ -119,31 +171,35 @@ jobs:
                 
                 console.log(`✅ Successfully assigned ${teamsToAssign.length} teams as reviewers`);
                 
-                // Step 7: Add success comment
-                const teamNames = teamsToAssign.map(slug => 
-                  teams.data.find(t => t.slug === slug)?.name || slug
-                ).join(', ');
-                
-                await github.rest.issues.createComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: context.issue.number,
-                  body: `🤖 **Auto-assigned reviewers**\n\n**${teamNames}** have been automatically assigned as reviewers based on repository custom properties.\n\n_Properties:_\n${assignedProperties.map(prop => `- ${prop}`).join('\n')}`
-                });
-                
-              } catch (error) {
-                console.error('Error in auto-assignment:', error);
-                
-                // Add error comment
-                try {
+                // Step 7: Add success comment (if enabled)
+                if (addComment) {
+                  const teamNames = teamsToAssign.map(slug => 
+                    teams.data.find(t => t.slug === slug)?.name || slug
+                  ).join(', ');
+                  
                   await github.rest.issues.createComment({
                     owner: context.repo.owner,
                     repo: context.repo.repo,
                     issue_number: context.issue.number,
-                    body: `🤖 **Auto-reviewer assignment error**\n\nFailed to automatically assign reviewer: ${error.message}\n\nPlease check repository custom properties and team permissions.`
+                    body: `🤖 **Auto-assigned reviewers**\n\n**${teamNames}** have been automatically assigned as reviewers based on repository custom properties.\n\n_Properties:_\n${assignedProperties.map(prop => `- ${prop}`).join('\n')}`
                   });
-                } catch (commentError) {
-                  console.error('Failed to add error comment:', commentError);
+                }
+                
+              } catch (error) {
+                console.error('Error in auto-assignment:', error);
+                
+                // Add error comment (if enabled)
+                if (commentOnError) {
+                  try {
+                    await github.rest.issues.createComment({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: context.issue.number,
+                      body: `🤖 **Auto-reviewer assignment error**\n\nFailed to automatically assign reviewer: ${error.message}\n\nPlease check repository custom properties and team permissions.`
+                    });
+                  } catch (commentError) {
+                    console.error('Failed to add error comment:', commentError);
+                  }
                 }
                 
                 core.setFailed(`Auto-assignment failed: ${error.message}`);
