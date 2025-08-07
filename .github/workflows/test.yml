@@ -1,0 +1,16 @@
+name: Org PR Check
+
+on:
+  pull_request:
+    branches:
+      - main  # or your default branch
+
+jobs:
+  check-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run PR checks
+        run: echo "Running organization-level PR checks..."
